@@ -3,7 +3,9 @@ use ark_poly::EvaluationDomain;
 use ark_std::{cfg_iter, cfg_iter_mut, vec};
 
 use crate::Vec;
-use ark_relations::r1cs::{ConstraintSystemRef, Result as R1CSResult, SynthesisError};
+use ark_relations::r1cs::{
+    ConstraintMatrices, ConstraintSystemRef, Result as R1CSResult, SynthesisError,
+};
 use core::ops::{AddAssign, Deref};
 
 #[cfg(feature = "parallel")]
@@ -47,9 +49,18 @@ pub trait R1CStoQAP {
         t: &F,
     ) -> Result<(Vec<F>, Vec<F>, Vec<F>, F, usize, usize), SynthesisError>;
 
+    #[inline]
     fn witness_map<F: PrimeField, D: EvaluationDomain<F>>(
         prover: ConstraintSystemRef<F>,
-    ) -> Result<Vec<F>, SynthesisError>;
+    ) -> R1CSResult<Vec<F>> {
+        let matrices = prover.to_matrices().unwrap();
+        Self::witness_map_with_matrices::<F, D>(prover, &matrices)
+    }
+
+    fn witness_map_with_matrices<F: PrimeField, D: EvaluationDomain<F>>(
+        prover: ConstraintSystemRef<F>,
+        matrices: &ConstraintMatrices<F>,
+    ) -> R1CSResult<Vec<F>>;
 
     fn h_query_scalars<F: PrimeField, D: EvaluationDomain<F>>(
         max_power: usize,
@@ -109,10 +120,10 @@ impl R1CStoQAP for LibsnarkReduction {
     }
 
     #[inline]
-    fn witness_map<F: PrimeField, D: EvaluationDomain<F>>(
+    fn witness_map_with_matrices<F: PrimeField, D: EvaluationDomain<F>>(
         prover: ConstraintSystemRef<F>,
+        matrices: &ConstraintMatrices<F>,
     ) -> R1CSResult<Vec<F>> {
-        let matrices = prover.to_matrices().unwrap();
         let zero = F::zero();
         let num_inputs = prover.num_instance_variables();
         let num_constraints = prover.num_constraints();

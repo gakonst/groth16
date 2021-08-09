@@ -46,9 +46,98 @@ pub use self::{generator::*, prover::*, verifier::*};
 
 use ark_crypto_primitives::snark::*;
 use ark_ec::PairingEngine;
-use ark_relations::r1cs::{ConstraintSynthesizer, SynthesisError};
+use ark_relations::r1cs::{
+    ConstraintMatrices, ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef,
+    OptimizationGoal, SynthesisError,
+};
 use ark_std::rand::RngCore;
 use ark_std::{marker::PhantomData, vec::Vec};
+
+pub struct InstantiatedGroth16<C, E: PairingEngine, QAP> {
+    circuit: Option<C>,
+    constraints_generated: bool,
+    cs: ConstraintSystemRef<E::Fr>,
+    pk: ProvingKey<E>,
+
+    matrices: Option<ConstraintMatrices<E::Fr>>,
+    qap: PhantomData<QAP>,
+}
+
+type D<F> = ark_poly::GeneralEvaluationDomain<F>;
+
+impl<C: ConstraintSynthesizer<E::Fr>, E: PairingEngine, QAP: crate::r1cs_to_qap::R1CStoQAP>
+    InstantiatedGroth16<C, E, QAP>
+{
+    pub fn new(circuit: C, pk: ProvingKey<E>) -> Self {
+        let cs = ConstraintSystem::new_ref();
+        cs.set_optimization_goal(OptimizationGoal::Constraints);
+        Self {
+            circuit: Some(circuit),
+            constraints_generated: false,
+            cs,
+            matrices: None,
+            pk,
+            qap: PhantomData,
+        }
+    }
+
+    pub fn generate_constraints(&mut self) -> Result<(), SynthesisError> {
+        if self.constraints_generated {
+            return Ok(())
+        }
+
+        if let Some(circuit) = self.circuit.take() {
+            // Synthesize the circuit.
+            let synthesis_time = start_timer!(|| "Constraint synthesis");
+            circuit.generate_constraints(self.cs.clone())?;
+            debug_assert!(self.cs.is_satisfied().unwrap());
+            end_timer!(synthesis_time);
+
+            let lc_time = start_timer!(|| "Inlining LCs");
+            self.cs.finalize();
+            end_timer!(lc_time);
+        }
+
+        Ok(())
+    }
+
+    pub fn matrices(&mut self) {
+        if self.matrices.is_none() {
+            self.matrices = self.cs.to_matrices();
+        }
+    }
+
+    pub fn set_matrices(&mut self, matrices: ConstraintMatrices<E::Fr>) {
+        self.matrices = Some(matrices);
+    }
+
+    /// to be used with new args for the circuit, but since the type is the same
+    /// the constraints will be the same
+    pub fn circuit(&mut self, circuit: C) {
+        self.circuit = Some(circuit);
+    }
+
+    pub fn witness_map(&mut self) -> Result<Vec<E::Fr>, SynthesisError> {
+        // calculate the matrices
+        self.matrices();
+        let witness_map_time = start_timer!(|| "R1CS to QAP witness map");
+        let h = if let Some(ref matrices) = self.matrices {
+            QAP::witness_map_with_matrices::<E::Fr, D<E::Fr>>(self.cs.clone(), matrices)?
+        } else {
+            QAP::witness_map::<E::Fr, D<E::Fr>>(self.cs.clone())?
+        };
+        end_timer!(witness_map_time);
+
+        Ok(h)
+    }
+
+    fn prove(&mut self, r: E::Fr, s: E::Fr) -> ark_relations::r1cs::Result<Proof<E>> {
+        // generate the constraints if necessary
+        self.generate_constraints()?;
+        let h = self.witness_map()?;
+        create_proof_with_witness_map(h, &self.pk, self.cs.clone(), r, s)
+    }
+}
 
 /// The SNARK of [[Groth16]](https://eprint.iacr.org/2016/260.pdf).
 pub struct Groth16<E: PairingEngine> {

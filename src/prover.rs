@@ -6,7 +6,8 @@ use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField, UniformRand, Zero};
 use ark_poly::GeneralEvaluationDomain;
 use ark_relations::r1cs::{
-    ConstraintSynthesizer, ConstraintSystem, OptimizationGoal, Result as R1CSResult,
+    ConstraintSynthesizer, ConstraintSystem, ConstraintSystemRef, OptimizationGoal,
+    Result as R1CSResult,
 };
 use ark_std::rand::Rng;
 use ark_std::{cfg_into_iter, cfg_iter, vec::Vec};
@@ -88,6 +89,9 @@ where
     create_proof_with_qap::<E, C, LibsnarkReduction>(circuit, pk, r, s)
 }
 
+// Prover phases:
+// 1. Generate Constraints
+
 /// Create a Groth16 proof using randomness `r` and `s` and the provided QAP calculator.
 #[inline]
 pub fn create_proof_with_qap<E, C, QAP>(
@@ -122,6 +126,23 @@ where
     let witness_map_time = start_timer!(|| "R1CS to QAP witness map");
     let h = QAP::witness_map::<E::Fr, D<E::Fr>>(cs.clone())?;
     end_timer!(witness_map_time);
+
+    let proof = create_proof_with_witness_map(h, pk, cs, r, s)?;
+    end_timer!(prover_time);
+
+    Ok(proof)
+}
+
+pub fn create_proof_with_witness_map<E>(
+    h: Vec<E::Fr>,
+    pk: &ProvingKey<E>,
+    cs: ConstraintSystemRef<E::Fr>,
+    r: E::Fr,
+    s: E::Fr,
+) -> R1CSResult<Proof<E>>
+where
+    E: PairingEngine,
+{
     let h_assignment = cfg_into_iter!(h).map(|s| s.into()).collect::<Vec<_>>();
     let c_acc_time = start_timer!(|| "Compute C");
 
@@ -192,8 +213,6 @@ where
     g_c += &l_aux_acc;
     g_c += &h_acc;
     end_timer!(c_time);
-
-    end_timer!(prover_time);
 
     Ok(Proof {
         a: g_a.into_affine(),
